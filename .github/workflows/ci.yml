@@ -1,0 +1,139 @@
+name: CI/CD — Build, Test, Trigger SageMaker Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION:       ap-south-1
+  ECR_REPOSITORY:   zomato-ads-mlops
+  PIPELINE_NAME:    zomato-ads-training-pipeline
+
+jobs:
+  # ─── Test ────────────────────────────────────────────────────────────────────
+  test:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  # ─── Build training image ─────────────────────────────────────────────────
+  build-training:
+    name: Build + push training image to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push training image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG:    ${{ github.sha }}
+        run: |
+          docker build \
+            -f docker/Dockerfile.training \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:training-$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:training-latest \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:training-$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:training-latest
+          echo "TRAINING_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:training-$IMAGE_TAG" >> $GITHUB_ENV
+
+  # ─── Build serving image ──────────────────────────────────────────────────
+  build-serving:
+    name: Build + push serving image to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push serving image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG:    ${{ github.sha }}
+        run: |
+          docker build \
+            -f docker/Dockerfile.serving \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:serving-$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:serving-latest \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:serving-$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:serving-latest
+
+  # ─── Trigger SageMaker Pipeline ───────────────────────────────────────────
+  trigger-training:
+    name: Trigger SageMaker training pipeline
+    runs-on: ubuntu-latest
+    needs: [build-training, build-serving]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install SageMaker SDK
+        run: pip install sagemaker boto3
+
+      - name: Start SageMaker pipeline execution
+        run: |
+          python - <<'EOF'
+          import boto3, json
+          client = boto3.client("sagemaker", region_name="${{ env.AWS_REGION }}")
+          response = client.start_pipeline_execution(
+              PipelineName="${{ env.PIPELINE_NAME }}",
+              PipelineExecutionDisplayName="ci-${{ github.sha[:7] }}",
+              PipelineParameters=[
+                  {"Name": "CommitHash", "Value": "${{ github.sha }}"},
+              ],
+          )
+          print(f"Pipeline execution ARN: {response['PipelineExecutionArn']}")
+          EOF

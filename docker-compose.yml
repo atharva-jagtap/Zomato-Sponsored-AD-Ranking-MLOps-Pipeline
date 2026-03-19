@@ -1,0 +1,129 @@
+# Local development stack
+# Starts: MLflow + Redis + Prometheus + Grafana + Loki
+#
+# Usage:
+#   docker compose up -d mlflow redis prometheus grafana loki
+#   docker compose --profile serve up -d api
+#   docker compose --profile logs up -d promtail
+#   docker compose down
+#
+# After starting:
+#   MLflow UI     : http://localhost:5000
+#   Grafana       : http://localhost:3000  (admin/admin)
+#   Prometheus    : http://localhost:9090
+#   Ranking API   : http://localhost:8080/docs
+
+services:
+
+  # ── MLflow tracking server ────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (online feature store) ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Ranking API (serving) ─────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.serving
+    container_name: ranking-api
+    ports:
+      - "8080:8080"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_STAGE: Production
+      REDIS_HOST: redis
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+  # ── Loki (log aggregation) ────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+
+  # ── Promtail (log shipper → Loki) ─────────────────────────────────────────
+  promtail:
+    profiles: ["logs"]
+    image: grafana/promtail:2.9.0
+    container_name: promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./infra/promtail.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+volumes:
+  mlflow_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:

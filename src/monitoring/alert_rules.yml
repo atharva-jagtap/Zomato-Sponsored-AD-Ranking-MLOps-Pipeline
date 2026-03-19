@@ -1,0 +1,74 @@
+# Grafana alert rules for Zomato Ads Ranking Service
+# Import via: Grafana → Alerting → Import rules
+
+groups:
+  - name: ranking_service_slos
+    interval: 1m
+    rules:
+
+      # P95 latency SLO: ranking must complete in < 200ms
+      - alert: RankingLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(ranking_request_latency_ms_bucket[5m])) by (le)
+          ) > 200
+        for: 2m
+        labels:
+          severity: warning
+          team: ml-platform
+        annotations:
+          summary: "Ranking P95 latency > 200ms"
+          description: "P95 latency is {{ $value }}ms. SLO is 200ms."
+          runbook: "https://wiki.internal/runbooks/ranking-latency"
+
+      # P99 latency critical
+      - alert: RankingLatencyCritical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(ranking_request_latency_ms_bucket[5m])) by (le)
+          ) > 500
+        for: 1m
+        labels:
+          severity: critical
+          team: ml-platform
+        annotations:
+          summary: "Ranking P99 latency > 500ms — SLO breach"
+          description: "P99 latency is {{ $value }}ms. Immediate investigation required."
+
+      # Error rate SLO: < 1% errors
+      - alert: RankingErrorRateHigh
+        expr: |
+          sum(rate(ranking_requests_total{status="error"}[5m]))
+          /
+          sum(rate(ranking_requests_total[5m]))
+          > 0.01
+        for: 2m
+        labels:
+          severity: warning
+          team: ml-platform
+        annotations:
+          summary: "Ranking error rate > 1%"
+          description: "Error rate is {{ $value | humanizePercentage }}."
+
+      # Model not loaded (readiness probe failing)
+      - alert: RankingModelNotLoaded
+        expr: ranking_model_version == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: ml-platform
+        annotations:
+          summary: "Ranking model not loaded"
+          description: "Model version gauge is 0 — model failed to load from MLflow."
+
+      # Low request volume (traffic drop = possible upstream issue)
+      - alert: RankingTrafficDrop
+        expr: |
+          sum(rate(ranking_requests_total[5m])) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: ml-platform
+        annotations:
+          summary: "Ranking traffic unexpectedly low"
+          description: "Request rate is {{ $value }}/s. Expected > 0.1/s."
