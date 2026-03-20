@@ -152,14 +152,7 @@ terraform apply -var="key_pair_name=zomato-mlops" -auto-approve
 cd ..
 ```
 
-## Phase 3: Local MLOps Services
-
-These are still part of the full guide even when AWS is required:
-
-```bash
-docker compose up -d mlflow redis prometheus grafana loki
-docker compose --profile logs up -d promtail
-```
+## Local MLOps Services
 
 Service URLs:
 
@@ -167,24 +160,6 @@ Service URLs:
 - Grafana: `http://localhost:3000`
 - Prometheus: `http://localhost:9090`
 - Loki: `http://localhost:3100`
-
-## Phase 4: Full Pipeline Execution
-
-Run the project in this order:
-
-```bash
-python src/ingestion/download_data.py
-python src/ingestion/simulate_sessions.py
-python src/validation/expectations.py
-python src/features/batch_features.py
-python src/features/feature_store.py --action apply
-python src/features/feature_store.py --action materialize
-python src/training/train.py --run-name baseline_v1
-python src/training/register.py --action inspect
-python src/training/register.py --action promote
-uvicorn src.serving.api:app --host 0.0.0.0 --port 8080
-python src/monitoring/drift_detector.py
-```
 
 ## CI/CD And SageMaker
 
@@ -194,14 +169,3 @@ The full guide also includes:
 - using [ci.yml](/c:/Users/chess/Desktop/zomato-ads-mlops/.github/workflows/ci.yml) for tests and image build
 - registering and running [sagemaker_pipeline.py](/c:/Users/chess/Desktop/zomato-ads-mlops/src/pipeline/sagemaker_pipeline.py)
 - deploying through EC2 and ALB from [main.tf](/c:/Users/chess/Desktop/zomato-ads-mlops/infra/main.tf)
-
-## What I Changed In The Repo
-
-I kept the supporting fixes that make the guide easier to execute on your system:
-
-- [src/serving/api.py](/c:/Users/chess/Desktop/zomato-ads-mlops/src/serving/api.py#L65) now reads MLflow and model settings from environment variables
-- [src/training/train.py](/c:/Users/chess/Desktop/zomato-ads-mlops/src/training/train.py#L43) now reads `MLFLOW_TRACKING_URI` from the environment
-- [src/training/register.py](/c:/Users/chess/Desktop/zomato-ads-mlops/src/training/register.py#L36) now reads registry settings from the environment
-- [docker-compose.yml](/c:/Users/chess/Desktop/zomato-ads-mlops/docker-compose.yml#L16) now has the missing Grafana and Promtail config files available
-
-Those changes support the AWS-first guide. They do not remove AWS or Terraform from the full project.
